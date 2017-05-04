@@ -30,3 +30,6 @@
 
 # NS-3
 *.xml
+*.pcap
+*.routes
+experiments/results/
