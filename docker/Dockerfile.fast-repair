@@ -1,0 +1,5 @@
+FROM artichoke-ns3:3.26
+
+COPY patches/ /tmp/patches/
+RUN for p in /tmp/patches/*.patch; do patch -p1 < "$p" || exit 1; done \
+    && ./waf build -j"$(nproc)"

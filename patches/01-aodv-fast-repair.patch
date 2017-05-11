@@ -1,0 +1,111 @@
+diff -ru a/src/aodv/model/aodv-routing-protocol.cc b/src/aodv/model/aodv-routing-protocol.cc
+--- a/src/aodv/model/aodv-routing-protocol.cc
++++ b/src/aodv/model/aodv-routing-protocol.cc
+@@ -143,6 +143,7 @@
+   m_destinationOnly (false),
+   m_gratuitousReply (true),
+   m_enableHello (false),
++  m_fastRepair (false),
+   m_routingTable (m_deletePeriod),
+   m_queue (m_maxQueueLen, m_maxQueueTime),
+   m_requestId (0),
+@@ -272,6 +273,11 @@
+                    MakeBooleanAccessor (&RoutingProtocol::SetBroadcastEnable,
+                                         &RoutingProtocol::GetBroadcastEnable),
+                    MakeBooleanChecker ())
++    .AddAttribute ("FastRepair",
++                   "Start route discovery for recently used own destinations as soon as their route breaks.",
++                   BooleanValue (false),
++                   MakeBooleanAccessor (&RoutingProtocol::m_fastRepair),
++                   MakeBooleanChecker ())
+     .AddAttribute ("UniformRv",
+                    "Access to the underlying UniformRandomVariable",
+                    StringValue ("ns3::UniformRandomVariable"),
+@@ -375,6 +381,10 @@
+   sockerr = Socket::ERROR_NOTERROR;
+   Ptr<Ipv4Route> route;
+   Ipv4Address dst = header.GetDestination ();
++  if (m_fastRepair && !dst.IsBroadcast () && !dst.IsMulticast ())
++    {
++      m_ownDestinations[dst] = Simulator::Now ();
++    }
+   RoutingTableEntry rt;
+   if (m_routingTable.LookupValidRoute (dst, rt))
+     {
+@@ -1690,6 +1700,36 @@
+       SendRerrMessage (packet, precursors);
+     }
+   m_routingTable.InvalidateRoutesWithDst (unreachable);
++  RepairOwnRoutes (unreachable);
++}
++
++void
++RoutingProtocol::RepairOwnRoutes (std::map<Ipv4Address, uint32_t> const & unreachable)
++{
++  if (!m_fastRepair)
++    return;
++  for (std::map<Ipv4Address, uint32_t>::const_iterator i = unreachable.begin ();
++       i != unreachable.end (); ++i)
++    {
++      std::map<Ipv4Address, Time>::const_iterator own = m_ownDestinations.find (i->first);
++      if (own == m_ownDestinations.end () || Simulator::Now () - own->second > m_deletePeriod)
++        continue;
++      Simulator::Schedule (MilliSeconds (m_uniformRandomVariable->GetInteger (0, 50)),
++                           &RoutingProtocol::StartRepair, this, i->first);
++    }
++}
++
++void
++RoutingProtocol::StartRepair (Ipv4Address dst)
++{
++  RoutingTableEntry rt;
++  if (m_routingTable.LookupValidRoute (dst, rt))
++    return;
++  if (m_addressReqTimer.find (dst) != m_addressReqTimer.end ()
++      && m_addressReqTimer[dst].IsRunning ())
++    return;
++  NS_LOG_LOGIC ("Fast repair: rediscover route to " << dst);
++  SendRequest (dst);
+ }
+ 
+ void
+@@ -1888,6 +1928,8 @@
+     }
+   unreachable.insert (std::make_pair (nextHop, toNextHop.GetSeqNo ()));
+   m_routingTable.InvalidateRoutesWithDst (unreachable);
++  unreachable.erase (nextHop);
++  RepairOwnRoutes (unreachable);
+ }
+ 
+ void
+diff -ru a/src/aodv/model/aodv-routing-protocol.h b/src/aodv/model/aodv-routing-protocol.h
+--- a/src/aodv/model/aodv-routing-protocol.h
++++ b/src/aodv/model/aodv-routing-protocol.h
+@@ -138,6 +138,7 @@
+   bool m_gratuitousReply;              ///< Indicates whether a gratuitous RREP should be unicast to the node originated route discovery.
+   bool m_enableHello;                  ///< Indicates whether a hello messages enable
+   bool m_enableBroadcast;              ///< Indicates whether a a broadcast data packets forwarding enable
++  bool m_fastRepair;                   ///< Rediscover own routes as soon as they break
+   //\}
+ 
+   /// IP protocol
+@@ -167,6 +168,8 @@
+   uint16_t m_rreqCount;
+   /// Number of RERRs used for RERR rate control
+   uint16_t m_rerrCount;
++  /// Destinations this node itself sent packets to, with the time of the last one
++  std::map<Ipv4Address, Time> m_ownDestinations;
+ 
+ private:
+   /// Start protocol operation
+@@ -238,6 +241,10 @@
+   void SendReplyAck (Ipv4Address neighbor);
+   /// Initiate RERR
+   void SendRerrWhenBreaksLinkToNextHop (Ipv4Address nextHop);
++  /// Start route discovery for recently used own destinations that just became unreachable
++  void RepairOwnRoutes (std::map<Ipv4Address, uint32_t> const & unreachable);
++  /// Send RREQ for dst unless a valid route or a discovery already exists
++  void StartRepair (Ipv4Address dst);
+   /// Forward RERR
+   void SendRerrMessage (Ptr<Packet> packet,  std::vector<Ipv4Address> precursors);
+   /**
