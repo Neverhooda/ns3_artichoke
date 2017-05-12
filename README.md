@@ -39,6 +39,38 @@ cd ../
 | `--csv` / `--nodeCsv` | off | append a summary row / write per-meter stats |
 | `--pcap` / `--printRoutes` | off / on | PCAP traces, routing table dump at 8 s |
 
+## PLC-like ring feeder: route recovery
+
+`plc/` holds a second scenario: 24 meters on a ring feeder, one of them drops
+off, and the concentrator measures how long the others stay silent while AODV
+repairs routes. The model and the measurements are described in
+[doc/plc-model.md](doc/plc-model.md).
+
+![Route recovery: stock AODV, tuned timers, FastRepair patch](doc/img/plc-recovery.png)
+
+- **ns-3.26 AODV**: stock implementation, ~10 s of silence.
+- **tuned timers**: `NetTraversalTime=1s`, `PathDiscoveryTime=2s`,
+  `RreqRetries=1`, no code changes, ~3.4 s.
+- **FastRepair**: `patches/01-aodv-fast-repair.patch` makes a node start route
+  discovery as soon as it loses a neighbour instead of waiting for the next
+  data packet. It does not help, and finding out why is the interesting part.
+
+```bash
+docker build -t artichoke-ns3:3.26 docker
+docker build -t artichoke-ns3:3.26-fast-repair -f docker/Dockerfile.fast-repair .
+docker run --rm -it -v "$PWD/plc:/opt/ns-allinone-3.26/ns-3.26/scratch/plc" \
+  -w /opt/ns-allinone-3.26/ns-3.26 artichoke-ns3:3.26-fast-repair bash
+
+./waf --run plc                    # stock behaviour
+./waf --run "plc --fastRepair"     # with the patch
+bash scratch/plc/run.sh            # 10 runs per configuration, ~1 min
+python3 scratch/plc/plot.py        # plc/results/*.png
+```
+
+Every `patches/*.patch` is applied in name order when building the
+`fast-repair` image. `EXTRA_CONFIGS='name|--flags'` adds configurations to
+`run.sh`.
+
 ## Parameter sweep
 
 Inside the container:
